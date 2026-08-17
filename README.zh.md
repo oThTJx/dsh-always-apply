@@ -28,7 +28,7 @@ alwaysApply: true
 Follow these rules for the whole session.
 ```
 
-`alwaysApply` 的布尔拼写与 `disable-model-invocation` / `user-invocable` 相同。非法值会使该 skill 从发现结果中丢弃。
+`alwaysApply` 的布尔拼写与 `disable-model-invocation` / `user-invocable` 相同。非法值会被视为未启用，因此本消费方跳过注入，但该 skill 仍保留在发现目录中。
 
 路由文案（`description` / `whenToUse`）仍由注册该 skill 的提供方负责；本消费方只负责选取并注入正文。挂载会发布清晰路由文案的 skill 提供方，才能让发现与模型目录保持可用。
 

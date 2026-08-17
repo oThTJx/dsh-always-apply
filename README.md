@@ -28,7 +28,7 @@ alwaysApply: true
 Follow these rules for the whole session.
 ```
 
-`alwaysApply` uses the same boolean spellings as `disable-model-invocation` / `user-invocable`. Invalid values drop the skill from discovery.
+`alwaysApply` uses the same boolean spellings as `disable-model-invocation` / `user-invocable`. An invalid value is treated as not opted in, so this consumer skips injection while the skill stays in the discovery catalog.
 
 Routing copy (`description` / `whenToUse`) stays on the skill provider that registers the skill; this consumer only selects and injects bodies. Mount skill providers that publish clear routing text so discovery and the model catalog stay useful.
 

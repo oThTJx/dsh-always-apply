@@ -199,6 +199,7 @@ async function readAlwaysApplyFrontmatter(path: string): Promise<boolean> {
   try {
     raw = await readFile(path, 'utf8')
   } catch {
+    // Missing or unreadable skill file; there is no frontmatter to inspect.
     return false
   }
   const frontmatter = parseFrontmatter(raw)
@@ -206,6 +207,7 @@ async function readAlwaysApplyFrontmatter(path: string): Promise<boolean> {
   try {
     return frontmatterBoolean(frontmatter, 'alwaysApply') === true
   } catch {
+    // Invalid `alwaysApply` value; treat as not opted in.
     return false
   }
 }
