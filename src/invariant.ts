@@ -15,9 +15,9 @@ export const name = 'skill-always-apply-invariant'
 export const inject = ['invariants']
 
 /**
- * No runtime invariant: this package only listens on `agent/pre-step` and
- * derives injection from the skills registry; it owns no durable relation to
- * check beyond that consumer behavior.
+ * No runtime invariant: this package only listens on `system-prompt/assemble`
+ * and derives injection from the skills registry; it owns no durable relation
+ * to check beyond that consumer behavior.
  */
 const install: InvariantInstaller = () => {}
 

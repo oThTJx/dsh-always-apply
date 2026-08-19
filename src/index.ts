@@ -1,6 +1,14 @@
 /**
- * Always-apply skill injection: durable session preamble for skills marked
- * `alwaysApply: true` (or listed in Config.names).
+ * Always-apply skill injection: standing instructions contributed to the system
+ * prompt for skills marked `alwaysApply: true` (or listed in Config.names).
+ *
+ * Unlike a durable user message, the rendered rules live in a
+ * `system-prompt/assemble` section: the catalog is re-evaluated on every
+ * assembly (memoized per agent and invalidated by `skills/change`), so
+ * membership and bodies refresh without accumulating conversation history and
+ * compaction never shadows them. Skill bodies must stay free of `{{...}}`
+ * prompt-variable syntax — the section is interpolated by the prompt renderer,
+ * so such skills are skipped with a warning.
  *
  * @module @firefly0621/dsh-skill-always-apply
  */
@@ -8,9 +16,7 @@
 import { readFile } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { UserMessage } from '@deepseek-ai/dsh-session'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import {
   escapeText,
   renderSkillContent,
@@ -27,23 +33,8 @@ export const inject = ['skills']
 
 const DEFAULT_MAX_TOTAL_BYTES = 100_000
 
-/**
- * Durable source for an always-apply injection message. Transcript consumers
- * present the injection from this metadata instead of re-parsing the body.
- */
-export interface SkillAlwaysApplySource {
-  readonly kind: 'skill-always-apply'
-  /** Injected skill bodies are instructions for the model to follow. */
-  readonly form: 'instructions'
-  /** Skill names included in this message, in injection order. */
-  readonly names: readonly string[]
-}
-
-declare module '@deepseek-ai/dsh-llm' {
-  interface MessageSourceMap {
-    'skill-always-apply': SkillAlwaysApplySource
-  }
-}
+/** Prompt section name for the always-apply standing instructions. */
+const SECTION_NAME = 'skill:always-apply'
 
 /** Always-apply consumer configuration. Invalid values fail plugin load. */
 export interface Config {
@@ -62,9 +53,9 @@ export interface Config {
    */
   skipSubagent?: boolean
   /**
-   * Maximum UTF-8 byte length of the complete always-apply user message
+   * Maximum UTF-8 byte length of the complete always-apply section text
    * (reminder envelope plus every rendered skill body). Skills that would push
-   * the complete message over the budget are skipped with a warning.
+   * the complete text over the budget are skipped with a warning.
    * Default 100000.
    */
   maxTotalBytes?: number
@@ -78,70 +69,43 @@ export const Config: z<Config> = z.object({
   maxTotalBytes: z.number().default(DEFAULT_MAX_TOTAL_BYTES),
 })
 
-/** Published vs model-visible always-apply presence for one session. */
-export interface AlwaysApplyPresence {
-  /** Whether any readable always-apply message exists in the durable log. */
-  readonly published: boolean
-  /** Whether a readable always-apply message is on the model-visible surface. */
-  readonly visible: boolean
+/**
+ * Render the always-apply standing-instructions text for the given skills:
+ * a short reminder naming the set, then each skill's canonical
+ * `<skill_content>` block.
+ * @param skills - loaded definitions to render, in injection order.
+ * @returns the rendered instructions text.
+ */
+export function renderAlwaysApplyText(skills: readonly SkillDefinition[]): string {
+  const names = skills.map(skill => skill.name)
+  const nameList = names.map(name => `- ${escapeText(name)}`).join('\n')
+  const bodies = skills.map(skill => renderSkillContent(skill)).join('\n\n')
+  return [
+    '<system-reminder>',
+    'The following always-apply skills are in effect for this session. Follow their instructions for the rest of the conversation.',
+    'Do not call the `skill` tool again for these names unless their bodies are absent from this conversation.',
+    '',
+    '<always_apply_skills>',
+    nameList,
+    '</always_apply_skills>',
+    '</system-reminder>',
+    '',
+    bodies,
+  ].join('\n')
 }
 
 /**
- * Register the always-apply pre-step consumer.
- * @param ctx - Cordis context with `skills`.
- * @param config - optional name overrides, subagent skip, and byte budget.
+ * Whether the text contains a complete `{{...}}` group — the prompt renderer
+ * would either substitute it as a variable or fail loud, so a section cannot
+ * carry it. Mirrors the renderer's own scan, not a regex over the body.
+ * @param text - candidate section text to inspect.
+ * @returns true when any `{{` is closed by a later `}}`.
  */
-export function apply(ctx: Context, config: Config = {}): void {
-  const forcedNames = new Set(config.names ?? [])
-  const disabledNames = new Set(config.disabledNames ?? [])
-  const skipSubagent = config.skipSubagent ?? true
-  const maxTotalBytes = config.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES
-  assertPositiveInteger('maxTotalBytes', maxTotalBytes)
-
-  // Await next() first so catalog / gesture listeners can run, then prepend
-  // always-apply bodies as background instructions ahead of those messages.
-  ctx.on('agent/pre-step', async (
-    { agent, signal },
-    next,
-  ): Promise<PreStepDecision> => {
-    const decision = await next()
-    if (decision.kind === 'reject') return decision
-    if (skipSubagent && agent.session.header.origin === 'subagent') return decision
-    if (shouldSkipAlwaysApplyInjection(agent, decision.messages)) return decision
-
-    signal.throwIfAborted()
-    const lookup = { cwd: agent.session.header.cwd, signal, scope: agent }
-    const snapshot = await ctx.skills.snapshot(lookup)
-    signal.throwIfAborted()
-    if (!snapshot.complete) return decision
-
-    const loaded: SkillDefinition[] = []
-    let message: UserMessage | undefined
-    for (const summary of [...snapshot.skills].sort((left, right) => compareCodePoints(left.name, right.name))) {
-      if (disabledNames.has(summary.name)) continue
-      const forced = forcedNames.has(summary.name)
-      const summaryFlag = summaryAlwaysApplyFlag(summary)
-      if (!forced && summaryFlag === false) continue
-
-      const skill = await ctx.skills.get(summary.name, lookup)
-      signal.throwIfAborted()
-      if (skill === undefined) continue
-      if (!forced && summaryFlag === undefined && !(await definitionIsAlwaysApply(skill))) continue
-
-      const candidate = renderAlwaysApplyMessage([...loaded, skill])
-      if (utf8ByteLength(userMessageText(candidate)) > maxTotalBytes) {
-        ctx.logger.warn(
-          `skill-always-apply: skipping "${skill.name}" — complete message would exceed maxTotalBytes (${maxTotalBytes})`,
-        )
-        continue
-      }
-      loaded.push(skill)
-      message = candidate
-    }
-    if (message === undefined) return decision
-
-    return { kind: 'enter', messages: [message, ...decision.messages] }
-  })
+function hasPromptVariableSyntax(text: string): boolean {
+  for (let open = text.indexOf('{{'); open >= 0; open = text.indexOf('{{', open + 2)) {
+    if (text.indexOf('}}', open + 2) >= 0) return true
+  }
+  return false
 }
 
 /**
@@ -182,7 +146,7 @@ async function definitionIsAlwaysApply(definition: SkillDefinition & { readonly 
 function definitionAlwaysApplyFlag(definition: SkillDefinition & { readonly alwaysApply?: unknown }): boolean | undefined {
   if (definition.alwaysApply !== undefined) return definition.alwaysApply === true
   const metadata = definition.metadata
-  if (metadata !== undefined && metadata !== null && typeof metadata === 'object') {
+  if (metadata !== undefined && typeof metadata === 'object') {
     const flag = (metadata as Record<string, unknown>).alwaysApply
     if (flag !== undefined) return flag === true
   }
@@ -260,111 +224,78 @@ function frontmatterBoolean(data: Record<string, unknown>, key: string): boolean
 }
 
 /**
- * Whether the pre-step listener should skip building a new always-apply message.
- * Skips when the current step already carries one, or when a prior always-apply
- * message is still on the model-visible surface. A durable but surface-shadowed
- * message (for example after compaction) does not skip — the listener re-injects.
- * @param agent - live agent whose session log and surface are scanned.
- * @param stepMessages - messages already proposed for this step's enter decision.
- * @returns true when injection should be skipped.
+ * Always-apply consumer: contributes a `skill:always-apply` system-prompt
+ * section assembled per step. Rendering is memoized per agent and invalidated
+ * by `skills/change` (membership or body refresh) and by agent disposal
+ * (eviction); a warm cache keeps each assembly a plain section unshift.
+ * @param ctx - Cordis context with `skills`.
+ * @param config - optional name overrides, subagent skip, and byte budget.
  */
-export function shouldSkipAlwaysApplyInjection(
-  agent: Agent,
-  stepMessages: readonly UserMessage[],
-): boolean {
-  if (alwaysApplyMessage(stepMessages) !== undefined) return true
-  return alwaysApplyPresence(agent).visible
-}
+export function apply(ctx: Context, config: Config = {}): void {
+  const forcedNames = new Set(config.names ?? [])
+  const disabledNames = new Set(config.disabledNames ?? [])
+  const skipSubagent = config.skipSubagent ?? true
+  const maxTotalBytes = config.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES
+  assertPositiveInteger('maxTotalBytes', maxTotalBytes)
 
-/**
- * Return whether this session's model-visible surface already carries always-apply.
- * @param agent - live agent whose session surface is scanned.
- * @returns true when a readable always-apply message is currently visible.
- */
-export function sessionHasAlwaysApply(agent: Agent): boolean {
-  return alwaysApplyPresence(agent).visible
-}
+  // Rendered section text per agent; `system-prompt/assemble` is async and runs
+  // for every step, so the cache keeps the recomposition cheap between changes.
+  const cached = new Map<Agent, string>()
 
-/**
- * Scan durable events and the model-visible surface for always-apply messages.
- * @param agent - live agent whose session is scanned.
- * @returns published and visible flags for always-apply presence.
- */
-export function alwaysApplyPresence(agent: Agent): AlwaysApplyPresence {
-  const visibleNodes = new Set(agent.session.surface.nodes)
-  let published = false
-  let visible = false
-  for (const event of agent.session.events) {
-    if (event.type !== 'user/message') continue
-    if (readAlwaysApplyNames(event.data.source) === undefined) continue
-    published = true
-    if (visibleNodes.has(event.seq)) visible = true
+  const compose = async (agent: Agent, signal: AbortSignal | undefined): Promise<string> => {
+    const lookup = { cwd: agent.session.header.cwd, signal, scope: agent }
+    const snapshot = await ctx.skills.snapshot(lookup)
+    if (!snapshot.complete) return ''
+    const loaded: SkillDefinition[] = []
+    for (const summary of [...snapshot.skills].sort((left, right) => compareCodePoints(left.name, right.name))) {
+      if (disabledNames.has(summary.name)) continue
+      const forced = forcedNames.has(summary.name)
+      const summaryFlag = summaryAlwaysApplyFlag(summary)
+      if (!forced && summaryFlag === false) continue
+
+      const skill = await ctx.skills.get(summary.name, lookup)
+      if (skill === undefined) continue
+      if (!forced && summaryFlag === undefined && !(await definitionIsAlwaysApply(skill))) continue
+      if (hasPromptVariableSyntax(skill.content)) {
+        ctx.logger.warn(
+          `skill-always-apply: skipping "${skill.name}" — body contains {{...}} prompt-variable syntax the system prompt cannot carry`,
+        )
+        continue
+      }
+      const candidate = renderAlwaysApplyText([...loaded, skill])
+      if (utf8ByteLength(candidate) > maxTotalBytes) {
+        ctx.logger.warn(
+          `skill-always-apply: skipping "${skill.name}" — complete section would exceed maxTotalBytes (${maxTotalBytes})`,
+        )
+        continue
+      }
+      loaded.push(skill)
+    }
+    return loaded.length === 0 ? '' : renderAlwaysApplyText(loaded)
   }
-  return { published, visible }
-}
 
-/**
- * Build the durable always-apply user message for the given loaded skills.
- * @param skills - loaded definitions to render, in injection order.
- * @returns a user-role instructions message with {@link SkillAlwaysApplySource}.
- */
-export function renderAlwaysApplyMessage(skills: readonly SkillDefinition[]): UserMessage {
-  const names = skills.map(skill => skill.name)
-  const source: SkillAlwaysApplySource = {
-    kind: 'skill-always-apply',
-    form: 'instructions',
-    names,
-  }
-  const nameList = names.map(name => `- ${escapeText(name)}`).join('\n')
-  const bodies = skills.map(skill => renderSkillContent(skill)).join('\n\n')
-  return createUserMessage({
-    content: [{
-      type: 'text',
-      text: [
-        '<system-reminder>',
-        'The following always-apply skills are in effect for this session. Follow their instructions for the rest of the conversation.',
-        'Do not call the `skill` tool again for these names unless their bodies are absent from this conversation.',
-        '',
-        '<always_apply_skills>',
-        nameList,
-        '</always_apply_skills>',
-        '</system-reminder>',
-        '',
-        bodies,
-      ].join('\n'),
-    }],
-    source,
+  ctx.on('skills/change', () => { cached.clear() })
+  ctx.on('agent/disposed', ({ agent }) => { cached.delete(agent) })
+
+  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+    const agent = context.agent
+    // Agentless diagnostics carry no standing rules; subagent sessions opt out
+    // unless configured otherwise. Waterfall listeners must delegate via next().
+    if (agent === undefined || (skipSubagent && agent.session.header.origin === 'subagent')) {
+      return next()
+    }
+    let text = cached.get(agent)
+    if (text === undefined) {
+      text = await compose(agent, context.signal)
+      cached.set(agent, text)
+    }
+    if (text === '') return next()
+    const result = await next()
+    return {
+      ...result,
+      sections: [{ name: SECTION_NAME, text }, ...result.sections],
+    }
   })
-}
-
-function alwaysApplyMessage(messages: readonly UserMessage[]): UserMessage | undefined {
-  for (const message of messages) {
-    if (readAlwaysApplyNames(message.source) !== undefined) return message
-  }
-  return undefined
-}
-
-/**
- * Names of one durable always-apply message, or undefined when the record is
- * not a usable always-apply source (seed validation only guarantees `kind`).
- * @param source - message source to inspect.
- * @returns readable name list, or undefined when the source is not this plugin's.
- */
-function readAlwaysApplyNames(source: unknown): readonly string[] | undefined {
-  if (typeof source !== 'object' || source === null) return undefined
-  const record = source as { kind?: unknown; names?: unknown }
-  if (record.kind !== 'skill-always-apply') return undefined
-  if (!Array.isArray(record.names)) return undefined
-  const names: string[] = []
-  for (const entry of record.names as readonly unknown[]) {
-    if (typeof entry !== 'string' || entry.length === 0) return undefined
-    names.push(entry)
-  }
-  return names
-}
-
-function userMessageText(message: UserMessage): string {
-  return message.content.map(block => block.type === 'text' ? block.text : '').join('')
 }
 
 function utf8ByteLength(value: string): number {

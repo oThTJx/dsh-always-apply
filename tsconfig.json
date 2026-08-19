@@ -12,6 +12,7 @@
     { "path": "../../core/agent" },
     { "path": "../../llm/llm" },
     { "path": "../../core/session" },
+    { "path": "../../core/system-prompt" },
     { "path": "../skill" },
     { "path": "../../runtime-diagnostics/invariants" }
   ]
