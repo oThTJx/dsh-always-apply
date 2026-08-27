@@ -1,16 +1,16 @@
 /**
- * Package-owned invariant companion for `@firefly0621/dsh-skill-always-apply`.
- * @module @firefly0621/dsh-skill-always-apply/invariant
+ * Package-owned invariant companion for `@firefly0621/dsh-always-apply`.
+ * @module @firefly0621/dsh-always-apply/invariant
  */
 
 /* jscpd:ignore-start */
 import type { Context } from '@deepseek-ai/cordis'
 import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 
-const PACKAGE_NAME = '@firefly0621/dsh-skill-always-apply'
+const PACKAGE_NAME = '@firefly0621/dsh-always-apply'
 
 /** Cordis companion plugin name. */
-export const name = 'skill-always-apply-invariant'
+export const name = 'always-apply-invariant'
 /** Service required before the companion can reserve package ownership. */
 export const inject = ['invariants']
 

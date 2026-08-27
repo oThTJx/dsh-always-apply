@@ -1,6 +1,6 @@
-# Installable overlay / custom-base patch for `@firefly0621/dsh-skill-always-apply`.
+# Installable overlay / custom-base patch for `@firefly0621/dsh-always-apply`.
 # Opt-in: not mounted by default on fork `dsh-base`. Prefer:
-#   dsh plugin --profile web add @firefly0621/dsh-skill-always-apply
+#   dsh plugin --profile web add @firefly0621/dsh-always-apply
 - insert:
-    - id: skill-always-apply
-      name: '@firefly0621/dsh-skill-always-apply'
+    - id: always-apply
+      name: '@firefly0621/dsh-always-apply'

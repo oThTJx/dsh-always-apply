@@ -14,8 +14,8 @@ import { loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import type { SkillRegistration } from '@deepseek-ai/dsh-skill'
 import * as ToolSkill from '@deepseek-ai/dsh-tool-skill'
-import * as SkillAlwaysApply from '@firefly0621/dsh-skill-always-apply'
-import { renderAlwaysApplyText } from '@firefly0621/dsh-skill-always-apply'
+import * as SkillAlwaysApply from '@firefly0621/dsh-always-apply'
+import { renderAlwaysApplyText } from '@firefly0621/dsh-always-apply'
 import { MockAdapter, textResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 
 type AlwaysApplySkillRegistration = SkillRegistration & { readonly alwaysApply?: boolean }
@@ -49,8 +49,8 @@ function userMessageTexts(agent: Agent): string[] {
 
 describe('package composition contracts', () => {
   it('exports a function plugin namespace with no default export', async () => {
-    const mod = await import('@firefly0621/dsh-skill-always-apply')
-    expect(mod.name).toBe('skill-always-apply')
+    const mod = await import('@firefly0621/dsh-always-apply')
+    expect(mod.name).toBe('always-apply')
     expect(mod.inject).toEqual(['skills'])
     expect(mod.apply).toEqual(expect.any(Function))
     expect('default' in mod && mod.default).toBeFalsy()
@@ -58,12 +58,12 @@ describe('package composition contracts', () => {
 
   it('ships an insert-only overlay patch naming this package', async () => {
     const patchPath = fileURLToPath(new URL('../cordis.patch.yml', import.meta.url))
-    const patches = loadOverlayPatches('skill-always-apply-test', patchPath)
+    const patches = loadOverlayPatches('always-apply-test', patchPath)
     expect(patches).toHaveLength(1)
     expect(patches[0]?.insert).toEqual([
       {
-        id: 'skill-always-apply',
-        name: '@firefly0621/dsh-skill-always-apply',
+        id: 'always-apply',
+        name: '@firefly0621/dsh-always-apply',
       },
     ])
   })
@@ -75,7 +75,7 @@ describe('package composition contracts', () => {
       repository: { url: string }
       dsh: { bundle: { patch: string } }
     }
-    expect(pkg.version).toBe('0.1.0-rc.10')
+    expect(pkg.version).toBe('0.1.0-rc.11')
     expect(pkg.dsh.bundle.patch).toBe('./cordis.patch.yml')
     expect(pkg.files).toEqual([
       'lib/index.js',
@@ -83,7 +83,7 @@ describe('package composition contracts', () => {
       'cordis.patch.yml',
       'lib/types/**/*.d.ts',
     ])
-    expect(pkg.repository.url).toBe('git+https://github.com/oThTJx/dsh-skill-always-apply.git')
+    expect(pkg.repository.url).toBe('git+https://github.com/oThTJx/dsh-always-apply.git')
   })
 })
 
@@ -104,9 +104,9 @@ describe('renderAlwaysApplyText', () => {
   })
 })
 
-describe('dsh-skill-always-apply plugin', () => {
+describe('dsh-always-apply plugin', () => {
   it('detects alwaysApply from loaded definitions when summaries lack the field', async () => {
-    const temp = await mkdtemp(join(tmpdir(), 'dsh-skill-always-apply-main-'))
+    const temp = await mkdtemp(join(tmpdir(), 'dsh-always-apply-main-'))
     try {
       const fileSkillPath = join(temp, 'from-file.md')
       await writeFile(fileSkillPath, [
@@ -206,6 +206,109 @@ describe('dsh-skill-always-apply plugin', () => {
     } finally {
       await rm(temp, { recursive: true, force: true })
     }
+  })
+
+  it('does not stick on an empty cache when the first snapshot is incomplete', async () => {
+    const ctx = new Context()
+    let complete = false
+    const skills = {
+      snapshot: async () => ({
+        complete,
+        skills: [{
+          name: 'always-on',
+          description: 'Always-on fixture',
+          invocation: { modelInvocable: true, userInvocable: true },
+          source: 'runtime',
+          provider: 'runtime',
+        }],
+      }),
+      get: async () => ({
+        name: 'always-on',
+        description: 'Always-on fixture',
+        alwaysApply: true,
+        invocation: { modelInvocable: true, userInvocable: true },
+        source: 'runtime',
+        provider: 'runtime',
+        content: 'Follow always-on rules.',
+      }),
+    }
+    ctx.provide('skills', skills as never)
+
+    let listener:
+      | ((assembly: PromptAssembly, context: AssembleContext, next: () => Promise<PromptAssembly>) => Promise<PromptAssembly>)
+      | undefined
+    const originalOn = ctx.on.bind(ctx)
+    ;(ctx as unknown as { on: typeof ctx.on }).on = ((event: string, callback: (...args: never[]) => unknown) => {
+      if (event === 'system-prompt/assemble') listener = callback as typeof listener
+      return originalOn(event as never, callback as never)
+    }) as typeof ctx.on
+
+    await ctx.plugin(SkillAlwaysApply)
+    const base: PromptAssembly = { sections: [], contexts: [], tools: [], variables: {} }
+    const agent = {
+      session: { header: { origin: 'user', cwd: '/tmp' } },
+    } as unknown as Agent
+    const assemble = () => listener!(base, { agent, signal: new AbortController().signal }, async () => ({ ...base }))
+
+    expect((await assemble()).sections).toEqual([])
+    complete = true
+    expect((await assemble()).sections.map(section => section.text).join('')).toContain('Follow always-on rules.')
+  })
+
+  it('reuses last-good text when a later snapshot is incomplete', async () => {
+    const ctx = new Context()
+    let complete = true
+    let body = 'Follow always-on rules.'
+    const skills = {
+      snapshot: async () => ({
+        complete,
+        skills: [{
+          name: 'always-on',
+          description: 'Always-on fixture',
+          invocation: { modelInvocable: true, userInvocable: true },
+          source: 'runtime',
+          provider: 'runtime',
+        }],
+      }),
+      get: async () => ({
+        name: 'always-on',
+        description: 'Always-on fixture',
+        alwaysApply: true,
+        invocation: { modelInvocable: true, userInvocable: true },
+        source: 'runtime',
+        provider: 'runtime',
+        content: body,
+      }),
+    }
+    ctx.provide('skills', skills as never)
+
+    let listener:
+      | ((assembly: PromptAssembly, context: AssembleContext, next: () => Promise<PromptAssembly>) => Promise<PromptAssembly>)
+      | undefined
+    const originalOn = ctx.on.bind(ctx)
+    ;(ctx as unknown as { on: typeof ctx.on }).on = ((event: string, callback: (...args: never[]) => unknown) => {
+      if (event === 'system-prompt/assemble') listener = callback as typeof listener
+      return originalOn(event as never, callback as never)
+    }) as typeof ctx.on
+
+    await ctx.plugin(SkillAlwaysApply)
+    const base: PromptAssembly = { sections: [], contexts: [], tools: [], variables: {} }
+    const agent = {
+      session: { header: { origin: 'user', cwd: '/tmp' } },
+    } as unknown as Agent
+    const assemble = () => listener!(base, { agent, signal: new AbortController().signal }, async () => ({ ...base }))
+
+    expect((await assemble()).sections.map(section => section.text).join('')).toContain('Follow always-on rules.')
+
+    ctx.emit('skills/change')
+    complete = false
+    body = 'Should not appear while incomplete.'
+    expect((await assemble()).sections.map(section => section.text).join('')).toContain('Follow always-on rules.')
+    expect((await assemble()).sections.map(section => section.text).join('')).not.toContain('Should not appear')
+
+    complete = true
+    body = 'Updated always-on rules.'
+    expect((await assemble()).sections.map(section => section.text).join('')).toContain('Updated always-on rules.')
   })
 
   it('injects alwaysApply skills into the system prompt, not the history', async () => {

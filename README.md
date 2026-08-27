@@ -1,4 +1,4 @@
-# @firefly0621/dsh-skill-always-apply
+# @firefly0621/dsh-always-apply
 
 English | [中文](README.zh.md)
 
@@ -7,7 +7,7 @@ Opt-in Cordis consumer that contributes skill bodies marked `alwaysApply: true` 
 This package does **not** register a skill provider. Mount it beside `dsh-skill` / `dsh-skill-filesystem` (and usually `dsh-tool-skill`). It is not part of the default `dsh-base` composition; install with:
 
 ```sh
-dsh plugin --profile web add @firefly0621/dsh-skill-always-apply
+dsh plugin --profile web add @firefly0621/dsh-always-apply
 ```
 
 Or insert the shipped `cordis.patch.yml` into a custom base.
@@ -39,9 +39,9 @@ The shipped `@firefly0621/dsh-skill-karpathy-guidelines` provider marks `karpath
 On every `system-prompt/assemble` (the assembly that runs before each model step):
 
 1. Skip agentless assemblies and sessions whose `session.header.origin === 'subagent'` (default; `skipSubagent: false` overrides).
-2. `snapshot()` the viewing agent's skills; skip incomplete observations.
-3. Select `Config.names` plus skills whose summary, loaded definition, or skill-file frontmatter carries `alwaysApply: true`, minus `disabledNames`.
-4. Load each body via `ctx.skills.get()`, honor section `maxTotalBytes`, and contribute one `skill:always-apply` system-prompt section that lists names and embeds each `renderSkillContent` block.
+2. `snapshot()` the viewing agent's skills. Incomplete observations reuse the last complete always-apply text for that agent (or inject nothing when none exists yet) and do not write the warm cache, so the next assembly retries.
+3. Select `Config.names` plus skills whose summary, loaded definition, or skill-file frontmatter carries `alwaysApply: true`, minus `disabledNames`. Candidate loads run concurrently; byte-budget skips still apply in name order.
+4. Honor section `maxTotalBytes`, and contribute one `skill:always-apply` system-prompt section that lists names and embeds each `renderSkillContent` block.
 
 Rendering is memoized per agent and invalidated by `skills/change`, so membership and bodies refresh on the next assembly after a catalog change, and the prompt prefix stays byte-stable between changes for KV reuse.
 
@@ -62,7 +62,7 @@ Always-apply injection is a host standing-instructions path: frontmatter `always
 
 #### What the model sees
 
-A `skill:always-apply` section at the front of the system prompt when at least one selected skill fits the complete-section budget: a short `<system-reminder>` naming the always-apply set, then each skill's canonical `<skill_content>` block. Because the section is part of the system prompt, every step receives it, compaction never shadows it, and a catalog change lands on the next assembly.
+A `skill:always-apply` section at the front of the system prompt when at least one selected skill fits the complete-section budget: a short `<system-reminder>` naming the always-apply set, then each skill's canonical `<skill_content>` block. Because the section is part of the system prompt, every step receives it, compaction never shadows it, and a catalog change lands on the next complete assembly (incomplete rediscovery keeps the previous complete text until then).
 
 #### Token effect
 
@@ -77,5 +77,5 @@ The section text sits in the request prefix. While the always-apply set is uncha
 - **Opt-in only** — product defaults do not mount this plugin; operators add it explicitly.
 - **Bodies must avoid `{{...}}` prompt-variable syntax** — the section is interpolated by the prompt renderer; a body containing a complete `{{...}}` group is skipped with a warning (an unclosed `{{` is kept as literal prose).
 - **A complete persona replaces every section** — an agent whose composition registers a `complete` persona (agent presets) suppresses all prompt sections, including this one, for that agent.
-- **Catalog still lists model-invocable always-apply skills** — those entries remain in the `skill` catalog; the reminder tells the model not to re-load them when the body is already present.
+- **Catalog still lists model-invocable always-apply skills** — those entries remain in the `skill` catalog; the reminder tells the model not to re-load them when the body is already present in the system prompt.
 - **Bypasses model invocation policy** — always-apply and `Config.names` inject regardless of `modelInvocable`; use `disabledNames` to exclude.

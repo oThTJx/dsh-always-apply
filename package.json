@@ -1,13 +1,13 @@
 {
-  "name": "@firefly0621/dsh-skill-always-apply",
+  "name": "@firefly0621/dsh-always-apply",
   "description": "Inject skills marked alwaysApply into DeepSeek Harness sessions without a skill tool load",
-  "version": "0.1.0-rc.10",
+  "version": "0.1.0-rc.11",
   "publishConfig": {
     "access": "public"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/oThTJx/dsh-skill-always-apply.git"
+    "url": "git+https://github.com/oThTJx/dsh-always-apply.git"
   },
   "type": "module",
   "main": "lib/index.js",

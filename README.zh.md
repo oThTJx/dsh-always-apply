@@ -1,4 +1,4 @@
-# @firefly0621/dsh-skill-always-apply
+# @firefly0621/dsh-always-apply
 
 [English](README.md) | 中文
 
@@ -7,7 +7,7 @@
 本包**不**注册 skill 提供方。需与 `dsh-skill` / `dsh-skill-filesystem`（通常还有 `dsh-tool-skill`）一起挂载。默认不进 `dsh-base`；安装方式：
 
 ```sh
-dsh plugin --profile web add @firefly0621/dsh-skill-always-apply
+dsh plugin --profile web add @firefly0621/dsh-always-apply
 ```
 
 也可把自带的 `cordis.patch.yml` 插入自定义 base。
@@ -39,9 +39,9 @@ Follow these rules for the whole session.
 在每次 `system-prompt/assemble`（每个模型 step 前的组装）时：
 
 1. 跳过无 agent 的组装，以及 `session.header.origin === 'subagent'` 的会话（默认；可用 `skipSubagent: false` 覆盖）。
-2. 对当前 agent 做 `snapshot()`；不完整观察则跳过。
-3. 选取 `Config.names` 中的名称，以及 summary、加载后定义或 skill 文件 frontmatter 中带 `alwaysApply: true` 的 skill，并排除 `disabledNames`。
-4. 经 `ctx.skills.get()` 加载正文，遵守 section 的 `maxTotalBytes`，贡献一个 `skill:always-apply` system-prompt section（名称列表 + 各 `renderSkillContent` 块）。
+2. 对当前 agent 做 `snapshot()`。不完整观察会复用该 agent 上一次完整 always-apply 文本（若尚无则不注入），且不写入 warm 缓存，以便下次组装重试。
+3. 选取 `Config.names` 中的名称，以及 summary、加载后定义或 skill 文件 frontmatter 中带 `alwaysApply: true` 的 skill，并排除 `disabledNames`。候选加载并发进行；字节预算仍按名称顺序跳过。
+4. 遵守 section 的 `maxTotalBytes`，贡献一个 `skill:always-apply` system-prompt section（名称列表 + 各 `renderSkillContent` 块）。
 
 渲染按 agent 记忆化，由 `skills/change` 失效：目录变化后的下一次组装即刷新成员与正文；两次变化之间 prompt 前缀逐字节稳定，利于 KV 缓存复用。
 
@@ -62,7 +62,7 @@ always-apply 注入是宿主常驻指令路径：frontmatter `alwaysApply: true`
 
 #### What the model sees
 
-在至少有一个选中 skill 落入完整 section 预算时，system prompt 最前有一条 `skill:always-apply` section：短 `<system-reminder>` 列出 always-apply 集合，随后各 skill 的规范 `<skill_content>` 块。因为它是 system prompt 的一部分，每个 step 都会收到，compaction 永远不会遮蔽它；目录变化在下次组装时生效。
+在至少有一个选中 skill 落入完整 section 预算时，system prompt 最前有一条 `skill:always-apply` section：短 `<system-reminder>` 列出 always-apply 集合，随后各 skill 的规范 `<skill_content>` 块。因为它是 system prompt 的一部分，每个 step 都会收到，compaction 永远不会遮蔽它；目录变化在下一次完整组装时生效（不完整的重新发现会保留此前的完整文本直至那时）。
 
 #### Token effect
 
@@ -77,5 +77,5 @@ section 文本位于请求前缀。always-apply 集合不变时渲染文本逐�
 - **仅 opt-in** — 产品默认不挂载；由运营方显式安装。
 - **正文须避免 `{{...}}` 提示变量语法** — section 会被 prompt 渲染器插值；含完整 `{{...}}` 组的正文会被跳过并告警（未闭合的 `{{` 按字面散文保留）。
 - **`complete` persona 会替换所有 section** — 组合中注册了 `complete` persona（agent preset）的 agent，其所有 prompt section（含本 section）都会被抑制。
-- **目录仍列出模型可调用的 always-apply skill** — 这些条目仍出现在 `skill` 目录；提醒文案要求正文已在会话中时勿再加载。
+- **目录仍列出模型可调用的 always-apply skill** — 这些条目仍出现在 `skill` 目录；提醒文案要求正文已在 system prompt 中时勿再加载。
 - **绕过模型调用策略** — always-apply 与 `Config.names` 不论 `modelInvocable` 都会注入；用 `disabledNames` 排除。

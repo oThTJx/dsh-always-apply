@@ -6,11 +6,13 @@
  * `system-prompt/assemble` section: the catalog is re-evaluated on every
  * assembly (memoized per agent and invalidated by `skills/change`), so
  * membership and bodies refresh without accumulating conversation history and
- * compaction never shadows them. Skill bodies must stay free of `{{...}}`
- * prompt-variable syntax — the section is interpolated by the prompt renderer,
- * so such skills are skipped with a warning.
+ * compaction never shadows them. An incomplete skills snapshot reuses the last
+ * complete render for that agent instead of clearing standing instructions.
+ * Skill bodies must stay free of `{{...}}` prompt-variable syntax — the
+ * section is interpolated by the prompt renderer, so such skills are skipped
+ * with a warning.
  *
- * @module @firefly0621/dsh-skill-always-apply
+ * @module @firefly0621/dsh-always-apply
  */
 
 import { readFile } from 'node:fs/promises'
@@ -26,7 +28,7 @@ import {
 import { parse as parseYaml } from 'yaml'
 
 /** Cordis plugin name used by loader diagnostics. */
-export const name = 'skill-always-apply'
+export const name = 'always-apply'
 
 /** Skills registry for discovery and loading. */
 export const inject = ['skills']
@@ -83,7 +85,7 @@ export function renderAlwaysApplyText(skills: readonly SkillDefinition[]): strin
   return [
     '<system-reminder>',
     'The following always-apply skills are in effect for this session. Follow their instructions for the rest of the conversation.',
-    'Do not call the `skill` tool again for these names unless their bodies are absent from this conversation.',
+    'Do not call the `skill` tool again for these names unless their bodies are absent from the system prompt.',
     '',
     '<always_apply_skills>',
     nameList,
@@ -223,11 +225,18 @@ function frontmatterBoolean(data: Record<string, unknown>, key: string): boolean
   throw new TypeError(`frontmatter field "${key}" must be a boolean`)
 }
 
+/** Result of one always-apply composition against the current skills catalog. */
+type ComposeResult =
+  | { readonly status: 'complete'; readonly text: string }
+  | { readonly status: 'incomplete' }
+
 /**
  * Always-apply consumer: contributes a `skill:always-apply` system-prompt
  * section assembled per step. Rendering is memoized per agent and invalidated
  * by `skills/change` (membership or body refresh) and by agent disposal
  * (eviction); a warm cache keeps each assembly a plain section unshift.
+ * Incomplete snapshots do not overwrite the warm cache: the last complete
+ * render is reused until discovery completes again.
  * @param ctx - Cordis context with `skills`.
  * @param config - optional name overrides, subagent skip, and byte budget.
  */
@@ -241,41 +250,65 @@ export function apply(ctx: Context, config: Config = {}): void {
   // Rendered section text per agent; `system-prompt/assemble` is async and runs
   // for every step, so the cache keeps the recomposition cheap between changes.
   const cached = new Map<Agent, string>()
+  // Survives `skills/change` warm-cache clears so an incomplete rediscovery can
+  // keep standing instructions until the next complete snapshot lands.
+  const lastGood = new Map<Agent, string>()
 
-  const compose = async (agent: Agent, signal: AbortSignal | undefined): Promise<string> => {
+  const compose = async (agent: Agent, signal: AbortSignal | undefined): Promise<ComposeResult> => {
     const lookup = { cwd: agent.session.header.cwd, signal, scope: agent }
     const snapshot = await ctx.skills.snapshot(lookup)
-    if (!snapshot.complete) return ''
-    const loaded: SkillDefinition[] = []
-    for (const summary of [...snapshot.skills].sort((left, right) => compareCodePoints(left.name, right.name))) {
-      if (disabledNames.has(summary.name)) continue
+    if (!snapshot.complete) return { status: 'incomplete' }
+
+    const summaries = [...snapshot.skills]
+      .sort((left, right) => compareCodePoints(left.name, right.name))
+      .filter((summary) => {
+        if (disabledNames.has(summary.name)) return false
+        const forced = forcedNames.has(summary.name)
+        const summaryFlag = summaryAlwaysApplyFlag(summary)
+        return forced || summaryFlag !== false
+      })
+
+    // Host summaries often omit `alwaysApply`, so selection may need a full
+    // load per candidate; resolve those loads concurrently, then apply budget
+    // in name order so skip order stays stable.
+    const resolved = await Promise.all(summaries.map(async (summary) => {
       const forced = forcedNames.has(summary.name)
       const summaryFlag = summaryAlwaysApplyFlag(summary)
-      if (!forced && summaryFlag === false) continue
-
       const skill = await ctx.skills.get(summary.name, lookup)
-      if (skill === undefined) continue
-      if (!forced && summaryFlag === undefined && !(await definitionIsAlwaysApply(skill))) continue
+      if (skill === undefined) return undefined
+      if (!forced && summaryFlag === undefined && !(await definitionIsAlwaysApply(skill))) return undefined
       if (hasPromptVariableSyntax(skill.content)) {
         ctx.logger.warn(
-          `skill-always-apply: skipping "${skill.name}" — body contains {{...}} prompt-variable syntax the system prompt cannot carry`,
+          `always-apply: skipping "${skill.name}" — body contains {{...}} prompt-variable syntax the system prompt cannot carry`,
         )
-        continue
+        return undefined
       }
+      return skill
+    }))
+
+    const loaded: SkillDefinition[] = []
+    for (const skill of resolved) {
+      if (skill === undefined) continue
       const candidate = renderAlwaysApplyText([...loaded, skill])
       if (utf8ByteLength(candidate) > maxTotalBytes) {
         ctx.logger.warn(
-          `skill-always-apply: skipping "${skill.name}" — complete section would exceed maxTotalBytes (${maxTotalBytes})`,
+          `always-apply: skipping "${skill.name}" — complete section would exceed maxTotalBytes (${maxTotalBytes})`,
         )
         continue
       }
       loaded.push(skill)
     }
-    return loaded.length === 0 ? '' : renderAlwaysApplyText(loaded)
+    return {
+      status: 'complete',
+      text: loaded.length === 0 ? '' : renderAlwaysApplyText(loaded),
+    }
   }
 
   ctx.on('skills/change', () => { cached.clear() })
-  ctx.on('agent/disposed', ({ agent }) => { cached.delete(agent) })
+  ctx.on('agent/disposed', ({ agent }) => {
+    cached.delete(agent)
+    lastGood.delete(agent)
+  })
 
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const agent = context.agent
@@ -286,8 +319,14 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     let text = cached.get(agent)
     if (text === undefined) {
-      text = await compose(agent, context.signal)
-      cached.set(agent, text)
+      const composed = await compose(agent, context.signal)
+      if (composed.status === 'incomplete') {
+        text = lastGood.get(agent) ?? ''
+      } else {
+        text = composed.text
+        cached.set(agent, text)
+        lastGood.set(agent, text)
+      }
     }
     if (text === '') return next()
     const result = await next()
@@ -310,6 +349,6 @@ function compareCodePoints(left: string, right: string): number {
 
 function assertPositiveInteger(name: string, value: number, minimum = 1): void {
   if (!Number.isInteger(value) || value < minimum) {
-    throw new Error(`skill-always-apply: ${name} must be an integer greater than or equal to ${minimum}`)
+    throw new Error(`always-apply: ${name} must be an integer greater than or equal to ${minimum}`)
   }
 }
