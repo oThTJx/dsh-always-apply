@@ -2,80 +2,83 @@
 
 English | [中文](README.zh.md)
 
-Opt-in Cordis consumer that contributes skill bodies marked `alwaysApply: true` (Cursor-aligned frontmatter) to the system prompt of every model request, without requiring a `skill` tool load.
+Opt-in Cordis consumer that loads **Cursor-aligned project rules** from `.dsh/rules/**/*.mdc` and injects them into the system prompt. Cordis plugin name: `rules`. Prompt section: `rules:project`.
 
-This package does **not** register a skill provider. Mount it beside `dsh-skill` / `dsh-skill-filesystem` (and usually `dsh-tool-skill`). It is not part of the default `dsh-base` composition; install with:
+This package does **not** read skills or depend on `ctx.skills`. Mount it when you want project rules; install with:
 
 ```sh
 dsh plugin --profile web add @firefly0621/dsh-always-apply
 ```
 
-Or insert the shipped `cordis.patch.yml` into a custom base.
+Or insert the shipped `cordis.patch.yml` into a custom base. The browser Settings「规则」panel (`@firefly0621/dsh-client-ui-settings-rules`) is a dependency of this package, so one install brings the host plugin and the settings page together.
 
-The package also runs against upstream `@deepseek-ai/dsh-skill` releases that predate the typed `alwaysApply` field. When a catalog summary does not carry the field, this consumer loads the candidate and reads `alwaysApply` from the definition or the skill file's frontmatter, so no host-code change is required.
+## Rule files
 
-## Skill frontmatter
+Place `.mdc` files under `<session cwd>/.dsh/rules/` (override with Config `rulesDir`). Each file needs YAML frontmatter:
 
-In a local `SKILL.md` (or flat `.md` skill) parsed by `@deepseek-ai/dsh-skill-filesystem`:
+| `alwaysApply` | `globs` | Type |
+|---|---|---|
+| `true` | * | Always Apply — full body every assemble |
+| `false` | non-empty | Specific Files — body when an in-context path matches |
+| `false` | empty | Inactive — stored on disk but not auto-attached |
+
+Only `alwaysApply: true` classifies as Always Apply. `alwaysApply: false` without `globs` is never treated as always.
 
 ```yaml
 ---
-name: my-standing-rules
-description: Standing session rules
 alwaysApply: true
+description: Repo-wide constraints
 ---
 
-Follow these rules for the whole session.
+Keep rules short and actionable.
 ```
 
-`alwaysApply` uses the same boolean spellings as `disable-model-invocation` / `user-invocable`. An invalid value is treated as not opted in, so this consumer skips injection while the skill stays in the discovery catalog.
-
-Routing copy (`description` / `whenToUse`) stays on the skill provider that registers the skill; this consumer only selects and injects bodies. Mount skill providers that publish clear routing text so discovery and the model catalog stay useful.
-
-The shipped `@firefly0621/dsh-skill-karpathy-guidelines` provider marks `karpathy-guidelines` with `alwaysApply: true`. Mount this consumer next to that provider to inject the Karpathy body without a `skill` tool load.
+Bodies must not contain complete `{{...}}` prompt-variable groups (skipped with a warning).
 
 ## Behavior
 
-On every `system-prompt/assemble` (the assembly that runs before each model step):
+On every `system-prompt/assemble`:
 
-1. Skip agentless assemblies and sessions whose `session.header.origin === 'subagent'` (default; `skipSubagent: false` overrides).
-2. `snapshot()` the viewing agent's skills. Incomplete observations reuse the last complete always-apply text for that agent (or inject nothing when none exists yet) and do not write the warm cache, so the next assembly retries.
-3. Select `Config.names` plus skills whose summary, loaded definition, or skill-file frontmatter carries `alwaysApply: true`, minus `disabledNames`. Candidate loads run concurrently; byte-budget skips still apply in name order.
-4. Honor section `maxTotalBytes`, and contribute one `skill:always-apply` system-prompt section that lists names and embeds each `renderSkillContent` block.
+1. Skip agentless assemblies and `subagent` sessions by default (`skipSubagent`).
+2. Load `.mdc` rules from the resolved rules root (cached; invalidated on Settings write/delete and on external edits when `watchRules` is enabled).
+3. Auto-attach Always bodies and Specific bodies whose globs match v1 in-context paths (tool `read`/`write`/`edit` `file_path` values ∪ path tokens in user message text).
+4. Honor `maxTotalBytes` for the complete auto-attached section text (drop Specific before Always when over budget).
 
-Rendering is memoized per agent and invalidated by `skills/change`, so membership and bodies refresh on the next assembly after a catalog change, and the prompt prefix stays byte-stable between changes for KV reuse.
+Also registers:
+
+- **`projectRules` Typert remote** — `list` / `read` / `write` / `delete` for Settings and host callers.
 
 ### Config
 
 | Field | Default | Meaning |
 |---|---|---|
-| `names` | `[]` | Force-inject these skill names even without frontmatter `alwaysApply`. |
-| `disabledNames` | `[]` | Never inject these names, even when marked. |
+| `rulesDir` | `.dsh/rules` | Relative directory under the session workspace root; absolute paths and `..` are rejected. |
 | `skipSubagent` | `true` | Skip subagent-origin sessions. |
-| `maxTotalBytes` | `100000` | UTF-8 length of the **complete** always-apply section text (reminder envelope + every rendered body). Skills that would push the complete text over the budget are skipped with a warning. |
-
-Always-apply injection is a host standing-instructions path: frontmatter `alwaysApply: true` and `Config.names` do **not** require `modelInvocable`. A skill with `disable-model-invocation: true` can still be injected here while staying out of the model-facing `skill` catalog.
+| `maxTotalBytes` | `100000` | UTF-8 length of the complete auto-attached section text (reminder + bodies + framing as rendered). |
+| `watchRules` | `true` | Watch each accessed rules root and invalidate the cache on external `.mdc` edits (debounced). |
+| `watchDebounceMs` | `100` | Watcher debounce window in milliseconds before cache invalidation. |
+| `defaultWorkspaceRoot` | *(empty)* | Absolute workspace root used when no session workspace is available. Enables the Settings UI to manage rules without an active session. Must be an absolute path. |
 
 ## Model Experience
 
-### Always-apply standing instructions
+### Project rules section
 
 #### What the model sees
 
-A `skill:always-apply` section at the front of the system prompt when at least one selected skill fits the complete-section budget: a short `<system-reminder>` naming the always-apply set, then each skill's canonical `<skill_content>` block. Because the section is part of the system prompt, every step receives it, compaction never shadows it, and a catalog change lands on the next complete assembly (incomplete rediscovery keeps the previous complete text until then).
+When non-empty: a `rules:project` system-prompt section with a short reminder and `<auto_attached_rules>` / `<rule_content>` blocks for all auto-attached rules (Always and matching Specific).
 
 #### Token effect
 
-One section whose size is the reminder envelope plus every rendered skill body that fit under `maxTotalBytes`, re-sent in every request's system prompt.
+One section re-sent each request while rules and in-context matches stay within budget.
 
 #### KV Cache effect
 
-The section text sits in the request prefix. While the always-apply set is unchanged the rendered text is byte-stable, so the warm prefix cache is reused; a `skills/change` refresh recomposes the section, invalidating reuse from that token forward.
+Prefix reuse holds while the rendered section text is unchanged; a rules-file write, delete, or Specific match set change recomposes the section.
 
 ## Known Limitations and Deferred Work
 
-- **Opt-in only** — product defaults do not mount this plugin; operators add it explicitly.
-- **Bodies must avoid `{{...}}` prompt-variable syntax** — the section is interpolated by the prompt renderer; a body containing a complete `{{...}}` group is skipped with a warning (an unclosed `{{` is kept as literal prose).
-- **A complete persona replaces every section** — an agent whose composition registers a `complete` persona (agent presets) suppresses all prompt sections, including this one, for that agent.
-- **Catalog still lists model-invocable always-apply skills** — those entries remain in the `skill` catalog; the reminder tells the model not to re-load them when the body is already present in the system prompt.
-- **Bypasses model invocation policy** — always-apply and `Config.names` inject regardless of `modelInvocable`; use `disabledNames` to exclude.
+- **Opt-in only** — product defaults do not mount this plugin.
+- **No `.cursor/rules` import** — storage is `.dsh/rules` only.
+- **In-context paths are incomplete vs Cursor IDE** — no open-editor inventory on the web host; Specific matching uses tool-touched paths and user-text path tokens only.
+- **A complete persona replaces every section** — presets with a `complete` persona suppress this section for that agent.
+- **Typert client artifacts** — the gateway registers at runtime; web Settings must compose a client that can call `projectRules` once the remote is on the host API surface.

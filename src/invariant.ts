@@ -10,14 +10,14 @@ import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 const PACKAGE_NAME = '@firefly0621/dsh-always-apply'
 
 /** Cordis companion plugin name. */
-export const name = 'always-apply-invariant'
+export const name = 'rules-invariant'
 /** Service required before the companion can reserve package ownership. */
 export const inject = ['invariants']
 
 /**
- * No runtime invariant: this package only listens on `system-prompt/assemble`
- * and derives injection from the skills registry; it owns no durable relation
- * to check beyond that consumer behavior.
+ * No runtime invariant: this package listens on `system-prompt/assemble` and
+ * derives injection from on-disk `.mdc` rules; it owns no durable relation to
+ * check beyond that consumer behavior.
  */
 const install: InvariantInstaller = () => {}
 

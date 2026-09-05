@@ -1,7 +1,7 @@
 {
   "name": "@firefly0621/dsh-always-apply",
-  "description": "Inject skills marked alwaysApply into DeepSeek Harness sessions without a skill tool load",
-  "version": "0.1.0-rc.11",
+  "description": "Inject Cursor-aligned project rules from .dsh/rules into DeepSeek Harness sessions",
+  "version": "0.1.0-rc.18",
   "publishConfig": {
     "access": "public"
   },
@@ -21,7 +21,19 @@
       "types": "./lib/types/invariant.d.ts",
       "default": "./lib/invariant.js"
     },
+    "./types": {
+      "types": "./lib/types/types.d.ts",
+      "default": "./lib/types/types.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./typert": {
+      "types": "./lib/typert.host.d.ts",
+      "default": "./lib/typert.host.js"
+    },
+    "./remote": {
+      "types": "./lib/typert.remote-client.d.ts",
+      "default": "./lib/typert.remote-client.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
@@ -29,6 +41,11 @@
     "lib/index.js",
     "lib/invariant.js",
     "cordis.patch.yml",
+    "lib/typert.host.js",
+    "lib/typert.host.d.ts",
+    "lib/typert.remote-client.js",
+    "lib/typert.remote-client.d.ts",
+    "lib/types/**/*.js",
     "lib/types/**/*.d.ts"
   ],
   "license": "MIT",
@@ -39,18 +56,19 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "workspace:^",
-    "yaml": "^2.4.2"
+    "@firefly0621/dsh-client-ui-settings-rules": "workspace:^",
+    "picomatch": "^4.0.4",
+    "yaml": "^2.4.2",
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-agent": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",
-    "@deepseek-ai/dsh-llm": "workspace:^",
-    "@deepseek-ai/dsh-session": "workspace:^",
-    "@deepseek-ai/dsh-skill": "workspace:^",
-    "@deepseek-ai/dsh-system-prompt": "workspace:^",
-    "@deepseek-ai/cordis": "workspace:^"
+    "@deepseek-ai/dsh-typert-protocol": "workspace:^"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-agent": "workspace:^",
     "@deepseek-ai/dsh-agent-loop": "workspace:^",
     "@deepseek-ai/dsh-agent-loop-testkit": "workspace:^",
@@ -59,9 +77,9 @@
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-loader-smoke": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
-    "@deepseek-ai/dsh-skill": "workspace:^",
     "@deepseek-ai/dsh-system-prompt": "workspace:^",
-    "@deepseek-ai/dsh-tool-skill": "workspace:^",
-    "@deepseek-ai/cordis": "workspace:^"
+    "@deepseek-ai/dsh-tools": "workspace:^",
+    "@deepseek-ai/dsh-typert-protocol": "workspace:^",
+    "@types/picomatch": "^3.0.2"
   }
 }

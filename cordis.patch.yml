@@ -2,5 +2,8 @@
 # Opt-in: not mounted by default on fork `dsh-base`. Prefer:
 #   dsh plugin --profile web add @firefly0621/dsh-always-apply
 - insert:
-    - id: always-apply
+    - id: rules
       name: '@firefly0621/dsh-always-apply'
+    # Browser Settings「规则」section; ships with this opt-in overlay (not web-app default).
+    - id: ui-settings-rules
+      name: '@firefly0621/dsh-client-ui-settings-rules'

@@ -2,80 +2,83 @@
 
 [English](README.md) | 中文
 
-可选 Cordis 消费方：把 frontmatter 标了 `alwaysApply: true`（与 Cursor 对齐）的 skill 正文，贡献到每次模型请求的 system prompt，无需再调 `skill` 工具。
+可选挂载的 Cordis 消费方：从 `.dsh/rules/**/*.mdc` 加载 **对齐 Cursor 的项目规则**，并注入系统提示词。Cordis 插件名：`rules`。提示词节名：`rules:project`。
 
-本包**不**注册 skill 提供方。需与 `dsh-skill` / `dsh-skill-filesystem`（通常还有 `dsh-tool-skill`）一起挂载。默认不进 `dsh-base`；安装方式：
+本包**不**读取 skill，也**不**依赖 `ctx.skills`。需要项目规则时挂载；安装：
 
 ```sh
 dsh plugin --profile web add @firefly0621/dsh-always-apply
 ```
 
-也可把自带的 `cordis.patch.yml` 插入自定义 base。
+或将自带的 `cordis.patch.yml` 插入自定义 base。浏览器设置「规则」面板（`@firefly0621/dsh-client-ui-settings-rules`）是本包的依赖，因此一次安装同时带来 host 插件与设置页。
 
-本包也可直接运行在较早的上游 `@deepseek-ai/dsh-skill` 版本上。当目录摘要不携带类型化 `alwaysApply` 字段时，本消费方会加载候选 skill，并从定义或 skill 文件 frontmatter 读取 `alwaysApply`，因此无需修改宿主源码。
+## 规则文件
 
-## Skill frontmatter
+将 `.mdc` 放在 `<会话 cwd>/.dsh/rules/`（可用 Config `rulesDir` 覆盖）。每个文件需要 YAML frontmatter：
 
-由 `@deepseek-ai/dsh-skill-filesystem` 解析的本地 `SKILL.md`（或扁平 `.md`）：
+| `alwaysApply` | `globs` | 类型 |
+|---|---|---|
+| `true` | * | Always Apply — 每轮装配注入全文 |
+| `false` | 非空 | Specific Files — 上下文路径命中时注入全文 |
+| `false` | 空 | Inactive — 仅存储，不自动注入 |
+
+只有 `alwaysApply: true` 才算 Always Apply；`alwaysApply: false` 且无 `globs` 时绝不会当作 always。
 
 ```yaml
 ---
-name: my-standing-rules
-description: Standing session rules
 alwaysApply: true
+description: Repo-wide constraints
 ---
 
-Follow these rules for the whole session.
+Keep rules short and actionable.
 ```
 
-`alwaysApply` 的布尔拼写与 `disable-model-invocation` / `user-invocable` 相同。非法值会被视为未启用，因此本消费方跳过注入，但该 skill 仍保留在发现目录中。
-
-路由文案（`description` / `whenToUse`）仍由注册该 skill 的提供方负责；本消费方只负责选取并注入正文。挂载会发布清晰路由文案的 skill 提供方，才能让发现与模型目录保持可用。
-
-交付的 `@firefly0621/dsh-skill-karpathy-guidelines` 提供方将 `karpathy-guidelines` 标为 `alwaysApply: true`。与该提供方一起挂载本消费方，即可在不调用 `skill` 工具的情况下注入 Karpathy 正文。
+正文不得包含完整的 `{{...}}` 提示词变量组（会告警并跳过）。
 
 ## 行为
 
-在每次 `system-prompt/assemble`（每个模型 step 前的组装）时：
+每次 `system-prompt/assemble`：
 
-1. 跳过无 agent 的组装，以及 `session.header.origin === 'subagent'` 的会话（默认；可用 `skipSubagent: false` 覆盖）。
-2. 对当前 agent 做 `snapshot()`。不完整观察会复用该 agent 上一次完整 always-apply 文本（若尚无则不注入），且不写入 warm 缓存，以便下次组装重试。
-3. 选取 `Config.names` 中的名称，以及 summary、加载后定义或 skill 文件 frontmatter 中带 `alwaysApply: true` 的 skill，并排除 `disabledNames`。候选加载并发进行；字节预算仍按名称顺序跳过。
-4. 遵守 section 的 `maxTotalBytes`，贡献一个 `skill:always-apply` system-prompt section（名称列表 + 各 `renderSkillContent` 块）。
+1. 默认跳过无 agent 装配与 `subagent` 会话（`skipSubagent`）。
+2. 从解析后的规则根加载 `.mdc`（有缓存；设置写删会失效；`watchRules` 开启时外部编辑也会失效）。
+3. 自动挂载 Always 全文，以及 globs 命中 v1 上下文路径的 Specific 全文（工具 `read`/`write`/`edit` 的 `file_path` ∪ 用户消息中的路径 token）。
+4. 对完整自动挂载节文本遵守 `maxTotalBytes`（超预算时先丢 Specific、保留 Always）。
 
-渲染按 agent 记忆化，由 `skills/change` 失效：目录变化后的下一次组装即刷新成员与正文；两次变化之间 prompt 前缀逐字节稳定，利于 KV 缓存复用。
+同时注册：
+
+- **`projectRules` Typert remote** — `list` / `read` / `write` / `delete`，供设置页和 host 调用。
 
 ### Config
 
 | 字段 | 默认 | 含义 |
 |---|---|---|
-| `names` | `[]` | 即使无 frontmatter `alwaysApply` 也强制注入的 skill 名。 |
-| `disabledNames` | `[]` | 即使已标记也永不注入的名称。 |
+| `rulesDir` | `.dsh/rules` | 相对会话工作区根的目录；拒绝绝对路径与 `..`。 |
 | `skipSubagent` | `true` | 跳过 subagent 来源会话。 |
-| `maxTotalBytes` | `100000` | 完整 always-apply section 文本的 UTF-8 长度（提醒信封 + 全部已渲染正文）。会把完整文本推出预算的 skill 会被跳过并告警。 |
+| `maxTotalBytes` | `100000` | 完整自动挂载节文本的 UTF-8 长度上限。 |
+| `watchRules` | `true` | 监视已访问的规则根，外部 `.mdc` 编辑后失效缓存（去抖）。 |
+| `watchDebounceMs` | `100` | 缓存失效前的监视去抖窗口（毫秒）。 |
+| `defaultWorkspaceRoot` | *(空)* | 无活跃会话时使用的绝对工作区根路径，使设置 UI 可在无会话时管理规则。必须是绝对路径。 |
 
-always-apply 注入是宿主常驻指令路径：frontmatter `alwaysApply: true` 与 `Config.names` **不**要求 `modelInvocable`。带 `disable-model-invocation: true` 的 skill 仍可在此注入，同时不出现在面向模型的 `skill` 目录中。
+## 模型体验
 
-## Model Experience
+### 项目规则节
 
-### Always-apply 常驻指令
+#### 模型看到什么
 
-#### What the model sees
+非空时：系统提示词中的 `rules:project` 节，含短提醒和所有自动挂载规则（Always、匹配的 Specific）的 `<auto_attached_rules>` / `<rule_content>`。
 
-在至少有一个选中 skill 落入完整 section 预算时，system prompt 最前有一条 `skill:always-apply` section：短 `<system-reminder>` 列出 always-apply 集合，随后各 skill 的规范 `<skill_content>` 块。因为它是 system prompt 的一部分，每个 step 都会收到，compaction 永远不会遮蔽它；目录变化在下一次完整组装时生效（不完整的重新发现会保留此前的完整文本直至那时）。
+#### Token 影响
 
-#### Token effect
+规则与上下文匹配在预算内时，每轮请求重发该节。
 
-一个 section，大小为提醒信封加上所有落在 `maxTotalBytes` 内的已渲染 skill 正文，随每次请求的 system prompt 重发。
+#### KV Cache 影响
 
-#### KV Cache effect
+渲染文本不变时可复用前缀；规则写删或 Specific 匹配集变化会重算该节。
 
-section 文本位于请求前缀。always-apply 集合不变时渲染文本逐字节稳定，warm 前缀缓存可复用；`skills/change` 触发的刷新会重拼 section，从该 token 起使复用失效。
+## 已知限制与延后工作
 
-## Known Limitations and Deferred Work
-
-- **仅 opt-in** — 产品默认不挂载；由运营方显式安装。
-- **正文须避免 `{{...}}` 提示变量语法** — section 会被 prompt 渲染器插值；含完整 `{{...}}` 组的正文会被跳过并告警（未闭合的 `{{` 按字面散文保留）。
-- **`complete` persona 会替换所有 section** — 组合中注册了 `complete` persona（agent preset）的 agent，其所有 prompt section（含本 section）都会被抑制。
-- **目录仍列出模型可调用的 always-apply skill** — 这些条目仍出现在 `skill` 目录；提醒文案要求正文已在 system prompt 中时勿再加载。
-- **绕过模型调用策略** — always-apply 与 `Config.names` 不论 `modelInvocable` 都会注入；用 `disabledNames` 排除。
+- **仅可选挂载** — 产品默认不挂载本插件。
+- **不导入 `.cursor/rules`** — 仅使用 `.dsh/rules`。
+- **上下文路径相对 Cursor IDE 不完整** — Web host 无打开编辑器清单；Specific 仅用工具触及路径与用户文本路径 token。
+- **完整 persona 会替换全部节** — 带 `complete` persona 的预设会抑制本节。
+- **Typert 客户端产物** — 网关在运行时注册；Web 设置需在 host API 暴露 `projectRules` 后由客户端调用。

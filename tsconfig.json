@@ -10,10 +10,7 @@
     { "path": "../../../vendor/cordis" },
     { "path": "../../../vendor/schemastery" },
     { "path": "../../core/agent" },
-    { "path": "../../llm/llm" },
-    { "path": "../../core/session" },
-    { "path": "../../core/system-prompt" },
-    { "path": "../skill" },
+    { "path": "../../typert/protocol" },
     { "path": "../../runtime-diagnostics/invariants" }
   ]
 }
